@@ -1,12 +1,12 @@
 const express = require("express");
 const cors = require("cors");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 const util = require("util");
-const Docker = require("dockerode");
 
-const execAsync = util.promisify(exec);
+const execFileAsync = util.promisify(execFile);
 const app = express();
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const registryCredentials = new Map();
+const scanHistory = [];
 
 app.use(cors());
 app.use(express.json());
@@ -20,79 +20,150 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", scanner: "trivy", version: "1.0.0" });
 });
 
+function normalizeRegistryHost(registry) {
+  if (!registry) return "index.docker.io";
+
+  try {
+    const withScheme = registry.includes("://") ? registry : `https://${registry}`;
+    return new URL(withScheme).host.toLowerCase();
+  } catch (err) {
+    return registry.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+  }
+}
+
+function registryHostFromImage(image) {
+  const firstPart = image.split("/")[0];
+  if (firstPart.includes(".") || firstPart.includes(":") || firstPart === "localhost") {
+    return firstPart.toLowerCase();
+  }
+  return "index.docker.io";
+}
+
+function validImageName(image) {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(image);
+}
+
+function validTag(tag) {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(tag);
+}
+
+function buildAuthArgs(image) {
+  const registryHost = registryHostFromImage(image);
+  const creds = registryCredentials.get(registryHost);
+
+  if (!creds) return [];
+  return ["--username", creds.username, "--password", creds.password];
+}
+
+function extractMetadata(vulnData) {
+  const metadata = vulnData?.Metadata || {};
+  const osName = metadata?.OS?.Name || metadata?.OS?.Family || "linux";
+  const arch = metadata?.ImageConfig?.architecture || "amd64";
+  const layers = Array.isArray(metadata?.ImageConfig?.rootfs?.diff_ids)
+    ? metadata.ImageConfig.rootfs.diff_ids.length
+    : 0;
+
+  return {
+    os: `${osName}/${arch}`,
+    size: 0,
+    layers,
+  };
+}
+
 // ──────────────────────────────────────
 // Docker Registry Login
 // ──────────────────────────────────────
 app.post("/api/auth/login", async (req, res) => {
   const { registry, username, password } = req.body;
-
-  // Default to Docker Hub if no registry specified
-  const registryUrl = registry || "https://index.docker.io/v1/";
-
-  try {
-    await execAsync(
-      `docker login ${registryUrl} -u "${username}" -p "${password}"`
-    );
-    res.json({ success: true, message: "Authenticated successfully" });
-  } catch (err) {
-    res.status(401).json({
+  if (!username || !password) {
+    return res.status(400).json({
       success: false,
-      message: "Authentication failed",
-      error: err.stderr,
+      message: "Username and password are required",
     });
   }
+
+  const registryHost = normalizeRegistryHost(registry);
+  registryCredentials.set(registryHost, {
+    username,
+    password,
+    savedAt: new Date().toISOString(),
+  });
+
+  return res.json({
+    success: true,
+    message: `Credentials saved for ${registryHost}. They will be used during scans.`,
+  });
 });
 
 // ──────────────────────────────────────
-// List Images (from connected registry)
+// List Images (from scan history in daemonless mode)
 // ──────────────────────────────────────
 app.get("/api/images/local", async (req, res) => {
-  try {
-    const images = await docker.listImages();
-    const formatted = images
-      .filter((img) => img.RepoTags && img.RepoTags[0] !== "<none>:<none>")
-      .map((img) => ({
-        id: img.Id.substring(7, 19),
-        name: img.RepoTags[0].split(":")[0],
-        tag: img.RepoTags[0].split(":")[1] || "latest",
-        size: `${Math.round(img.Size / 1024 / 1024)} MB`,
-        created: new Date(img.Created * 1000).toISOString().split("T")[0],
-      }));
-    res.json({ images: formatted });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to list images", details: err.message });
+  const latestByImage = new Map();
+  for (const item of scanHistory) {
+    const key = `${item.image}:${item.tag}`;
+    if (!latestByImage.has(key)) latestByImage.set(key, item);
   }
+
+  const images = Array.from(latestByImage.values()).map((item) => ({
+    name: item.image,
+    tag: item.tag,
+    size: `${item.size_mb || 0} MB`,
+    created: new Date(item.scanned_at).toISOString().split("T")[0],
+  }));
+
+  return res.json({
+    images,
+    note: "Local Docker daemon image listing is unavailable in Kubernetes mode.",
+  });
 });
 
 // ──────────────────────────────────────
 // SCAN IMAGE - The Main Feature
 // ──────────────────────────────────────
 app.post("/api/scan", async (req, res) => {
-  const { image, tag = "latest" } = req.body;
-  const fullImage = `${image}:${tag}`;
+  const image = (req.body.image || "").trim();
+  const tag = (req.body.tag || "latest").trim();
 
   if (!image) {
     return res.status(400).json({ error: "Image name is required" });
   }
+  if (!validImageName(image) || !validTag(tag)) {
+    return res.status(400).json({
+      error: "Invalid image or tag format",
+      suggestion: "Use image format like nginx:latest or ghcr.io/user/app:v1",
+    });
+  }
+
+  const fullImage = `${image}:${tag}`;
+  const authArgs = buildAuthArgs(image);
 
   try {
-    // Step 1: Pull the image (needed for private images)
-    console.log(`[SCAN] Pulling image: ${fullImage}`);
-    await execAsync(`docker pull ${fullImage}`, { timeout: 120000 });
-
-    // Step 2: Run Trivy vulnerability scan
+    // Step 1: Run Trivy vulnerability scan (daemonless mode)
     console.log(`[SCAN] Running Trivy scan on: ${fullImage}`);
-    const { stdout: vulnScan } = await execAsync(
-      `trivy image --format json --severity CRITICAL,HIGH,MEDIUM,LOW ${fullImage}`,
+    const { stdout: vulnScan } = await execFileAsync(
+      "trivy",
+      [
+        "image",
+        "--format",
+        "json",
+        "--severity",
+        "CRITICAL,HIGH,MEDIUM,LOW",
+        "--timeout",
+        "10m",
+        ...authArgs,
+        fullImage,
+      ],
       { timeout: 300000, maxBuffer: 50 * 1024 * 1024 }
     );
 
-    // Step 3: Run Trivy secret scan
+    // Step 2: Run Trivy secret scan
     console.log(`[SCAN] Running secret detection on: ${fullImage}`);
     let secretScan = { Results: [] };
     try {
-      const { stdout: secretOut } = await execAsync(
-        `trivy image --format json --scanners secret ${fullImage}`,
+      const { stdout: secretOut } = await execFileAsync(
+        "trivy",
+        ["image", "--format", "json", "--scanners", "secret", "--timeout", "10m", ...authArgs, fullImage],
         { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }
       );
       secretScan = JSON.parse(secretOut);
@@ -100,12 +171,13 @@ app.post("/api/scan", async (req, res) => {
       console.log("[SCAN] Secret scan skipped:", e.message);
     }
 
-    // Step 4: Run Trivy misconfiguration scan
+    // Step 3: Run Trivy misconfiguration scan
     console.log(`[SCAN] Running misconfig check on: ${fullImage}`);
     let misconfigScan = { Results: [] };
     try {
-      const { stdout: misconfigOut } = await execAsync(
-        `trivy image --format json --scanners misconfig ${fullImage}`,
+      const { stdout: misconfigOut } = await execFileAsync(
+        "trivy",
+        ["image", "--format", "json", "--scanners", "misconfig", "--timeout", "10m", ...authArgs, fullImage],
         { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }
       );
       misconfigScan = JSON.parse(misconfigOut);
@@ -113,26 +185,26 @@ app.post("/api/scan", async (req, res) => {
       console.log("[SCAN] Misconfig scan skipped:", e.message);
     }
 
-    // Step 5: Get image metadata
-    const { stdout: inspectOut } = await execAsync(
-      `docker inspect ${fullImage} --format '{"size":{{.Size}},"layers":{{len .RootFS.Layers}},"os":"{{.Os}}/{{.Architecture}}"}'`
-    );
-    const metadata = JSON.parse(inspectOut);
-
-    // Step 6: Parse and format results
+    // Step 4: Parse and format results
     const vulnData = JSON.parse(vulnScan);
-    const report = formatScanReport(fullImage, image, tag, vulnData, secretScan, misconfigScan, metadata);
+    const metadata = extractMetadata(vulnData);
+    const report = formatScanReport(image, tag, vulnData, secretScan, misconfigScan, metadata);
+    scanHistory.unshift(report);
+    if (scanHistory.length > 100) scanHistory.pop();
 
     console.log(`[SCAN] Complete: ${fullImage} - Score: ${report.score}`);
     res.json(report);
   } catch (err) {
-    console.error(`[SCAN] Failed: ${fullImage}`, err.message);
+    const details = err.stderr || err.message;
+    console.error(`[SCAN] Failed: ${fullImage}`, details);
     res.status(500).json({
       error: "Scan failed",
-      details: err.message,
-      suggestion: err.message.includes("not found")
+      details,
+      suggestion: details.includes("UNAUTHORIZED") || details.includes("authentication")
+        ? "Authentication failed. Reconnect with valid registry credentials."
+        : details.includes("not found")
         ? "Image not found. Check the image name or login to the registry first."
-        : err.message.includes("timeout")
+        : details.includes("timeout")
         ? "Scan timed out. The image may be very large."
         : "An unexpected error occurred during scanning.",
     });
@@ -142,7 +214,7 @@ app.post("/api/scan", async (req, res) => {
 // ──────────────────────────────────────
 // Format Scan Report
 // ──────────────────────────────────────
-function formatScanReport(fullImage, image, tag, vulnData, secretData, misconfigData, metadata) {
+function formatScanReport(image, tag, vulnData, secretData, misconfigData, metadata) {
   // Extract vulnerabilities
   const vulnerabilities = [];
   const summary = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -238,16 +310,9 @@ function calculateScore(summary, secretCount, misconfigs) {
 // ──────────────────────────────────────
 // Scan History (in-memory for simplicity)
 // ──────────────────────────────────────
-const scanHistory = [];
-
 app.get("/api/history", (req, res) => {
   res.json({ scans: scanHistory });
 });
-
-// Wrap the scan endpoint to save history
-const originalScanHandler = app._router.stack.find(
-  (r) => r.route && r.route.path === "/api/scan" && r.route.methods.post
-);
 
 // ──────────────────────────────────────
 // Start Server

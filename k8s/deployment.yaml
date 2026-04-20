@@ -21,15 +21,15 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/YOUR_GITHUB_USER/dock-shield-api:IMAGE_TAG
+          image: ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-api:IMAGE_TAG
           ports:
             - containerPort: 4000
           env:
             - name: PORT
               value: "4000"
           volumeMounts:
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
+            - name: trivy-cache
+              mountPath: /root/.cache/trivy
           resources:
             limits:
               memory: "512Mi"
@@ -48,9 +48,8 @@ spec:
               port: 4000
             initialDelaySeconds: 5
       volumes:
-        - name: docker-sock
-          hostPath:
-            path: /var/run/docker.sock
+        - name: trivy-cache
+          emptyDir: {}
 
 ---
 # ─── Frontend Deployment ───
@@ -75,7 +74,7 @@ spec:
     spec:
       containers:
         - name: ui
-          image: ghcr.io/YOUR_GITHUB_USER/dock-shield-ui:IMAGE_TAG
+          image: ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-ui:IMAGE_TAG
           ports:
             - containerPort: 80
           resources:

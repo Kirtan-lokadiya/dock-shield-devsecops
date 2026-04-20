@@ -4,7 +4,7 @@
 FROM node:18-alpine
 
 # Install Trivy scanner
-RUN apk add --no-cache curl docker-cli && \
+RUN apk add --no-cache curl && \
     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
 # Create app directory
@@ -19,7 +19,6 @@ COPY server.js .
 
 # Non-root user
 RUN addgroup -S scanner && adduser -S scanner -G scanner
-# Note: scanner needs docker socket access, handled via group in docker-compose
 
 EXPOSE 4000
 

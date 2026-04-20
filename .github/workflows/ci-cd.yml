@@ -8,8 +8,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  BACKEND_IMAGE: ghcr.io/${{ github.repository }}/dock-shield-api
-  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/dock-shield-ui
+  BACKEND_IMAGE: ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-api
+  FRONTEND_IMAGE: ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-ui
 
 jobs:
 

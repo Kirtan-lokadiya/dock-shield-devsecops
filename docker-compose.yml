@@ -19,8 +19,6 @@ services:
     ports:
       - "4000:4000"
     volumes:
-      # Mount Docker socket so backend can pull & scan images
-      - /var/run/docker.sock:/var/run/docker.sock
       # Trivy cache (avoids re-downloading vulnerability DB)
       - trivy-cache:/root/.cache/trivy
     environment:

@@ -320,9 +320,7 @@
 // ═══════════════════════════════════════
 // Configuration
 // ═══════════════════════════════════════
-const API_URL = window.location.hostname === 'localhost'
-  ? 'http://localhost:4000'
-  : `${window.location.protocol}//${window.location.hostname}:4000`;
+const API_URL = '';
 
 let currentUser = '';
 let scanResults = [];
@@ -387,7 +385,7 @@ async function handleLogin() {
       errorEl.style.display = 'block';
     }
   } catch (err) {
-    errorEl.textContent = '⚠ Cannot connect to backend. Is the server running on port 4000?';
+    errorEl.textContent = '⚠ Cannot connect to backend. Check API proxy/service availability.';
     errorEl.style.display = 'block';
   }
 
@@ -421,9 +419,11 @@ async function handleScan() {
   const input = document.getElementById('scanInput').value.trim();
   if (!input) return;
 
-  const parts = input.split(':');
-  const image = parts[0];
-  const tag = parts[1] || 'latest';
+  // Parse image tag safely, including registries with a port (e.g. my-registry:5000/app:v1)
+  const lastSlash = input.lastIndexOf('/');
+  const lastColon = input.lastIndexOf(':');
+  const image = lastColon > lastSlash ? input.slice(0, lastColon) : input;
+  const tag = lastColon > lastSlash ? input.slice(lastColon + 1) : 'latest';
 
   // Check if already scanned
   const existing = scanResults.find(r => r.image === image && r.tag === tag);
