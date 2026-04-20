@@ -26,9 +26,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Semgrep (SAST)
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: "p/nodejs p/owasp-top-ten"
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            semgrep/semgrep:latest \
+            semgrep scan --config "p/nodejs p/owasp-top-ten" --error
 
   # ── Build & Push Backend ──
   build-backend:
