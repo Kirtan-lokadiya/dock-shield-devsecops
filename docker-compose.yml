@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────
+# Dock Shield - Full Stack Docker Security Scanner
+# ─────────────────────────────────────────────────────
+# Usage:
+#   docker-compose up -d
+#   Open http://localhost:3000
+# ─────────────────────────────────────────────────────
+
+version: "3.8"
+
+services:
+
+  # ─── Backend API (Trivy Scanner) ───
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dock-shield-api
+    ports:
+      - "4000:4000"
+    volumes:
+      # Mount Docker socket so backend can pull & scan images
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Trivy cache (avoids re-downloading vulnerability DB)
+      - trivy-cache:/root/.cache/trivy
+    environment:
+      - PORT=4000
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ─── Frontend Dashboard ───
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dock-shield-ui
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  trivy-cache:
+    driver: local

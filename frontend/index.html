@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dock Shield - Container Security Scanner</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #060a11;
+      --surface: #0c1220;
+      --surface-alt: #111a2e;
+      --border: #1a2540;
+      --text: #e4eaf5;
+      --text-muted: #6b7fa0;
+      --text-dim: #3d5070;
+      --accent: #00e5a0;
+      --accent-dim: #00e5a020;
+      --critical: #ff3366;
+      --high: #ff8844;
+      --medium: #ffcc33;
+      --low: #44ccdd;
+      --info: #6b7fa0;
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-body: 'DM Sans', system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font-body); min-height: 100vh; }
+
+    /* ── Layout ── */
+    .header {
+      padding: 14px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .logo {
+      width: 34px; height: 34px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #0891b2);
+      display: flex; align-items: center; justify-content: center; font-size: 18px;
+    }
+    .logo-text { font-family: var(--font-mono); font-size: 15px; font-weight: 700; letter-spacing: 0.04em; }
+    .logo-sub { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); letter-spacing: 0.06em; }
+
+    .container { max-width: 1000px; margin: 0 auto; padding: 24px 20px; }
+
+    /* ── Login Card ── */
+    .login-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: var(--bg); display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .login-card {
+      width: 440px; max-width: 92vw; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 16px; padding: 44px 36px;
+      box-shadow: 0 0 80px rgba(0, 229, 160, 0.05);
+    }
+    .login-icon {
+      width: 56px; height: 56px; border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), #0891b2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px; margin: 0 auto 16px;
+    }
+
+    /* ── Form Elements ── */
+    .form-label {
+      font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+      font-weight: 600; letter-spacing: 0.06em; display: block; margin-bottom: 6px;
+    }
+    .form-input {
+      width: 100%; padding: 12px 14px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 14px; font-family: var(--font-mono); outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-group { margin-bottom: 18px; }
+
+    .btn-primary {
+      width: 100%; padding: 13px; border: none; border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #0891b2);
+      color: var(--bg); font-size: 14px; font-weight: 700;
+      font-family: var(--font-mono); letter-spacing: 0.06em; cursor: pointer;
+    }
+    .btn-primary:disabled { background: var(--border); color: var(--text-muted); cursor: wait; }
+
+    /* ── Scan Bar ── */
+    .scan-bar {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 24px; margin-bottom: 24px;
+    }
+    .scan-bar-row { display: flex; gap: 10px; }
+    .scan-input {
+      flex: 1; padding: 12px 16px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 14px; font-family: var(--font-mono); outline: none;
+    }
+    .scan-input:focus { border-color: var(--accent); }
+    .btn-scan {
+      padding: 12px 24px; border: none; border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #0891b2);
+      color: var(--bg); font-size: 13px; font-weight: 700;
+      font-family: var(--font-mono); cursor: pointer; white-space: nowrap;
+    }
+
+    /* ── Registry Selector ── */
+    .registry-tabs {
+      display: flex; gap: 6px; margin-bottom: 16px;
+    }
+    .registry-tab {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted); font-size: 11px;
+      font-family: var(--font-mono); cursor: pointer; transition: all 0.2s;
+    }
+    .registry-tab.active {
+      background: var(--accent-dim); border-color: rgba(0, 229, 160, 0.3);
+      color: var(--accent);
+    }
+
+    /* ── Stats ── */
+    .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 18px;
+    }
+    .stat-label {
+      font-family: var(--font-mono); font-size: 9px; color: var(--text-muted);
+      letter-spacing: 0.1em; margin-bottom: 6px;
+    }
+    .stat-value { font-size: 26px; font-weight: 800; font-family: var(--font-mono); }
+
+    /* ── Scan Progress ── */
+    .scan-progress {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 28px; max-width: 520px; margin: 0 auto 24px;
+    }
+    .scan-step {
+      display: flex; align-items: center; gap: 10px; padding: 7px 0;
+      transition: opacity 0.4s;
+    }
+    .progress-bar {
+      height: 3px; background: var(--border); border-radius: 3px;
+      overflow: hidden; margin-top: 18px;
+    }
+    .progress-fill {
+      height: 100%; background: linear-gradient(90deg, var(--accent), #0891b2);
+      border-radius: 3px; transition: width 0.5s ease;
+    }
+
+    /* ── Results ── */
+    .results-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .result-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 18px; cursor: pointer; transition: all 0.2s;
+    }
+    .result-card:hover {
+      transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,0,0,0.3);
+    }
+
+    /* ── Detail Panel ── */
+    .detail-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden; margin-bottom: 24px;
+      animation: slideUp 0.3s ease;
+    }
+    @keyframes slideUp { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+
+    .detail-header {
+      padding: 18px 22px; background: var(--surface-alt);
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .tab-bar { display: flex; border-bottom: 1px solid var(--border); }
+    .tab-btn {
+      flex: 1; padding: 11px; background: transparent; border: none;
+      border-bottom: 2px solid transparent; color: var(--text-muted);
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      font-family: var(--font-mono); transition: all 0.2s;
+    }
+    .tab-btn.active { background: var(--surface-alt); border-bottom-color: var(--accent); color: var(--text); }
+
+    .vuln-item {
+      background: var(--surface-alt); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px; margin-bottom: 6px;
+    }
+    .sev-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 3px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+      font-family: var(--font-mono);
+    }
+
+    .empty-state { text-align: center; padding: 60px 20px; }
+    .section-label {
+      font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+      letter-spacing: 0.06em; margin-bottom: 12px;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .results-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════ LOGIN SCREEN ═══════ -->
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-card">
+    <div style="text-align: center; margin-bottom: 32px;">
+      <div class="login-icon">🛡️</div>
+      <h1 style="font-family: var(--font-mono); font-size: 22px; font-weight: 700; margin-bottom: 6px;">DOCK SHIELD</h1>
+      <p style="color: var(--text-muted); font-size: 13px;">Container Security Scanner</p>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">REGISTRY</label>
+      <select id="registrySelect" class="form-input" style="cursor: pointer;">
+        <option value="dockerhub">Docker Hub</option>
+        <option value="ghcr">GitHub Container Registry (ghcr.io)</option>
+        <option value="ecr">AWS ECR</option>
+        <option value="gcr">Google GCR</option>
+        <option value="acr">Azure ACR</option>
+        <option value="custom">Custom Registry</option>
+      </select>
+    </div>
+
+    <div id="customRegistryGroup" class="form-group" style="display: none;">
+      <label class="form-label">REGISTRY URL</label>
+      <input id="customRegistryUrl" class="form-input" placeholder="registry.example.com" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">USERNAME</label>
+      <input id="loginUser" class="form-input" placeholder="your-username" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">PASSWORD / ACCESS TOKEN</label>
+      <input id="loginToken" type="password" class="form-input" placeholder="dckr_pat_xxxxxxxxxxxx" />
+    </div>
+
+    <div id="loginError" style="color: var(--critical); font-family: var(--font-mono); font-size: 12px; margin-bottom: 12px; display: none;"></div>
+
+    <button id="loginBtn" class="btn-primary" onclick="handleLogin()">CONNECT & SCAN</button>
+
+    <p style="color: var(--text-dim); font-size: 11px; text-align: center; margin-top: 20px; line-height: 1.5;">
+      🔒 Credentials are sent directly to your backend server.<br>
+      Never stored in the browser.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════ MAIN DASHBOARD ═══════ -->
+<div id="dashboard" style="display: none;">
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">🛡️</div>
+      <div>
+        <div class="logo-text">DOCK SHIELD</div>
+        <div class="logo-sub">CONTAINER SECURITY SCANNER</div>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <span id="userLabel" style="font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);"></span>
+      <button onclick="handleLogout()" style="padding: 6px 14px; background: var(--border); border: none; border-radius: 6px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font-mono);">LOGOUT</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <!-- Scan Bar -->
+    <div class="scan-bar">
+      <div class="section-label">SCAN ANY DOCKER IMAGE</div>
+      <div class="scan-bar-row">
+        <input id="scanInput" class="scan-input" placeholder="Enter image (e.g. nginx:latest, mycompany/api:v2, ghcr.io/user/app:main)" onkeydown="if(event.key==='Enter')handleScan()" />
+        <button id="scanBtn" class="btn-scan" onclick="handleScan()">🔍 SCAN</button>
+      </div>
+      <div style="margin-top: 12px;">
+        <div style="font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); letter-spacing: 0.06em; margin-bottom: 8px;">
+          SUPPORTS: Docker Hub • GHCR • ECR • GCR • ACR • Private Registries
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div id="statsSection" style="display: none;"></div>
+
+    <!-- Scan Progress -->
+    <div id="scanProgress" style="display: none;"></div>
+
+    <!-- Error -->
+    <div id="scanError" style="display: none; background: rgba(255,51,102,0.08); border: 1px solid rgba(255,51,102,0.2); border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; color: var(--critical); font-family: var(--font-mono); font-size: 13px;"></div>
+
+    <!-- Detail Panel -->
+    <div id="detailPanel" style="display: none;"></div>
+
+    <!-- Results -->
+    <div id="resultsSection"></div>
+
+    <!-- Empty State -->
+    <div id="emptyState" class="empty-state">
+      <div style="font-size: 48px; margin-bottom: 16px;">🔍</div>
+      <div style="font-family: var(--font-mono); font-size: 16px; font-weight: 700; margin-bottom: 8px;">No images scanned yet</div>
+      <div style="font-size: 14px; color: var(--text-muted); max-width: 440px; margin: 0 auto; line-height: 1.6;">
+        Enter any Docker image name above — including your <strong>private images</strong> from any registry. The backend pulls the image and runs a real Trivy scan for CVEs, secrets, and misconfigurations.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+// Configuration
+// ═══════════════════════════════════════
+const API_URL = window.location.hostname === 'localhost'
+  ? 'http://localhost:4000'
+  : `${window.location.protocol}//${window.location.hostname}:4000`;
+
+let currentUser = '';
+let scanResults = [];
+let selectedResult = null;
+
+// ═══════════════════════════════════════
+// Registry Handling
+// ═══════════════════════════════════════
+document.getElementById('registrySelect').addEventListener('change', function() {
+  const customGroup = document.getElementById('customRegistryGroup');
+  customGroup.style.display = this.value === 'custom' ? 'block' : 'none';
+});
+
+// ═══════════════════════════════════════
+// Auth
+// ═══════════════════════════════════════
+async function handleLogin() {
+  const registry = document.getElementById('registrySelect').value;
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginToken').value.trim();
+  const errorEl = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+
+  if (!username || !password) {
+    errorEl.textContent = '⚠ Both fields are required';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  const registryUrls = {
+    dockerhub: 'https://index.docker.io/v1/',
+    ghcr: 'https://ghcr.io',
+    ecr: '', // handled separately
+    gcr: 'https://gcr.io',
+    acr: '', // user provides
+    custom: document.getElementById('customRegistryUrl')?.value || '',
+  };
+
+  btn.disabled = true;
+  btn.textContent = '⟳ AUTHENTICATING...';
+  errorEl.style.display = 'none';
+
+  try {
+    const res = await fetch(`${API_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        registry: registryUrls[registry],
+        username,
+        password,
+      }),
+    });
+
+    const data = await res.json();
+    if (data.success) {
+      currentUser = username;
+      document.getElementById('loginOverlay').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      document.getElementById('userLabel').textContent = `@${username}`;
+    } else {
+      errorEl.textContent = `⚠ ${data.message}`;
+      errorEl.style.display = 'block';
+    }
+  } catch (err) {
+    errorEl.textContent = '⚠ Cannot connect to backend. Is the server running on port 4000?';
+    errorEl.style.display = 'block';
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'CONNECT & SCAN';
+}
+
+function handleLogout() {
+  currentUser = '';
+  scanResults = [];
+  selectedResult = null;
+  document.getElementById('loginOverlay').style.display = 'flex';
+  document.getElementById('dashboard').style.display = 'none';
+  renderResults();
+}
+
+// ═══════════════════════════════════════
+// Scanning
+// ═══════════════════════════════════════
+const scanSteps = [
+  'Resolving image manifest...',
+  'Pulling image layers...',
+  'Analyzing OS packages...',
+  'Scanning app dependencies...',
+  'Detecting embedded secrets...',
+  'Checking Dockerfile config...',
+  'Generating security report...',
+];
+
+async function handleScan() {
+  const input = document.getElementById('scanInput').value.trim();
+  if (!input) return;
+
+  const parts = input.split(':');
+  const image = parts[0];
+  const tag = parts[1] || 'latest';
+
+  // Check if already scanned
+  const existing = scanResults.find(r => r.image === image && r.tag === tag);
+  if (existing) {
+    selectedResult = existing;
+    renderDetail();
+    return;
+  }
+
+  // Show progress
+  document.getElementById('scanError').style.display = 'none';
+  document.getElementById('detailPanel').style.display = 'none';
+  document.getElementById('scanBtn').disabled = true;
+  document.getElementById('scanBtn').textContent = 'SCANNING...';
+  showScanProgress(image, tag);
+
+  try {
+    const res = await fetch(`${API_URL}/api/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, tag }),
+    });
+
+    const data = await res.json();
+
+    if (res.ok) {
+      scanResults.unshift(data);
+      selectedResult = data;
+      document.getElementById('scanInput').value = '';
+      renderResults();
+      renderDetail();
+      renderStats();
+    } else {
+      showError(data.suggestion || data.error || 'Scan failed');
+    }
+  } catch (err) {
+    showError('Cannot connect to the backend server. Make sure it is running.');
+  }
+
+  document.getElementById('scanProgress').style.display = 'none';
+  document.getElementById('scanBtn').disabled = false;
+  document.getElementById('scanBtn').textContent = '🔍 SCAN';
+}
+
+function showScanProgress(image, tag) {
+  const el = document.getElementById('scanProgress');
+  let step = 0;
+
+  function render() {
+    el.innerHTML = `
+      <div class="scan-progress">
+        <div style="font-family: var(--font-mono); color: var(--accent); font-size: 13px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+          <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1s ease infinite;"></span>
+          SCANNING: ${image}:${tag}
+        </div>
+        ${scanSteps.map((s, i) => `
+          <div class="scan-step" style="opacity: ${i <= step ? 1 : 0.2}">
+            <span style="color: ${i < step ? 'var(--accent)' : i === step ? 'var(--medium)' : 'var(--text-dim)'}; font-size: 13px; width: 16px; text-align: center; font-family: var(--font-mono);">
+              ${i < step ? '✓' : i === step ? '◉' : '○'}
+            </span>
+            <span style="color: ${i <= step ? 'var(--text)' : 'var(--text-dim)'}; font-size: 13px; font-family: var(--font-mono);">${s}</span>
+          </div>
+        `).join('')}
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: ${((step + 1) / scanSteps.length) * 100}%"></div>
+        </div>
+      </div>
+    `;
+    el.style.display = 'block';
+  }
+
+  render();
+  const interval = setInterval(() => {
+    if (step < scanSteps.length - 1) { step++; render(); }
+    else clearInterval(interval);
+  }, 1200);
+}
+
+function showError(msg) {
+  const el = document.getElementById('scanError');
+  el.textContent = `⚠ ${msg}`;
+  el.style.display = 'block';
+}
+
+// ═══════════════════════════════════════
+// Rendering
+// ═══════════════════════════════════════
+function sevColor(sev) {
+  return { CRITICAL: 'var(--critical)', HIGH: 'var(--high)', MEDIUM: 'var(--medium)', LOW: 'var(--low)' }[sev] || 'var(--info)';
+}
+
+function scoreColor(s) { return s >= 80 ? 'var(--accent)' : s >= 50 ? 'var(--medium)' : 'var(--critical)'; }
+function scoreLabel(s) { return s >= 80 ? 'SECURE' : s >= 50 ? 'MODERATE RISK' : 'HIGH RISK'; }
+
+function renderStats() {
+  if (scanResults.length === 0) {
+    document.getElementById('statsSection').style.display = 'none';
+    return;
+  }
+
+  const totalCritical = scanResults.reduce((a, r) => a + (r.summary?.critical || 0), 0);
+  const totalHigh = scanResults.reduce((a, r) => a + (r.summary?.high || 0), 0);
+  const totalSecrets = scanResults.reduce((a, r) => a + (r.secrets?.length || 0), 0);
+  const avgScore = Math.round(scanResults.reduce((a, r) => a + r.score, 0) / scanResults.length);
+
+  const stats = [
+    { label: 'AVG SCORE', value: avgScore, color: scoreColor(avgScore) },
+    { label: 'CRITICAL', value: totalCritical, color: 'var(--critical)' },
+    { label: 'HIGH', value: totalHigh, color: 'var(--high)' },
+    { label: 'SECRETS', value: totalSecrets, color: totalSecrets > 0 ? 'var(--critical)' : 'var(--accent)' },
+  ];
+
+  document.getElementById('statsSection').innerHTML = `
+    <div class="stats-grid">
+      ${stats.map(s => `
+        <div class="stat-card" style="border-top: 3px solid ${s.color};">
+          <div class="stat-label">${s.label}</div>
+          <div class="stat-value" style="color: ${s.color};">${s.value}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  document.getElementById('statsSection').style.display = 'block';
+}
+
+function renderResults() {
+  const empty = document.getElementById('emptyState');
+  const section = document.getElementById('resultsSection');
+
+  if (scanResults.length === 0) {
+    empty.style.display = 'block';
+    section.innerHTML = '';
+    return;
+  }
+
+  empty.style.display = 'none';
+  section.innerHTML = `
+    <div class="section-label">SCAN HISTORY (${scanResults.length} images)</div>
+    <div class="results-grid">
+      ${scanResults.map((r, i) => `
+        <div class="result-card" onclick="selectResult(${i})" style="border: 1px solid ${selectedResult === r ? 'rgba(0,229,160,0.3)' : 'var(--border)'};">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+            <div>
+              <div style="font-family: var(--font-mono); font-size: 14px; font-weight: 700;">${r.image}</div>
+              <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">:${r.tag} • ${r.size_mb} MB</div>
+            </div>
+            <div style="text-align: center;">
+              <div style="font-size: 20px; font-weight: 800; color: ${scoreColor(r.score)}; font-family: var(--font-mono);">${r.score}</div>
+              <div style="font-size: 8px; color: var(--text-muted);">/100</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 5px; flex-wrap: wrap;">
+            ${Object.entries(r.summary).filter(([,c]) => c > 0).map(([s, c]) => `
+              <span style="padding: 2px 7px; border-radius: 3px; font-size: 10px; font-weight: 600; font-family: var(--font-mono); color: ${sevColor(s.toUpperCase())}; background: ${sevColor(s.toUpperCase())}18; border: 1px solid ${sevColor(s.toUpperCase())}25;">
+                ${c} ${s.toUpperCase()}
+              </span>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function selectResult(index) {
+  selectedResult = scanResults[index];
+  renderDetail();
+  renderResults();
+}
+
+function renderDetail() {
+  const panel = document.getElementById('detailPanel');
+  if (!selectedResult) { panel.style.display = 'none'; return; }
+
+  const r = selectedResult;
+  panel.style.display = 'block';
+  panel.innerHTML = `
+    <div class="detail-panel">
+      <div class="detail-header">
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="text-align: center;">
+            <div style="font-size: 28px; font-weight: 800; color: ${scoreColor(r.score)}; font-family: var(--font-mono);">${r.score}</div>
+            <div style="font-size: 8px; color: var(--text-muted);">/100</div>
+          </div>
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 15px; font-weight: 700;">${r.image}:${r.tag}</div>
+            <div style="display: flex; gap: 12px; margin-top: 4px;">
+              <span style="color: ${scoreColor(r.score)}; font-size: 11px; font-weight: 700; font-family: var(--font-mono);">${scoreLabel(r.score)}</span>
+              <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">${r.size_mb} MB • ${r.layers} layers • ${r.os}</span>
+            </div>
+          </div>
+        </div>
+        <button onclick="closeDetail()" style="background: var(--border); border: none; border-radius: 6px; color: var(--text-muted); padding: 6px 12px; cursor: pointer; font-size: 13px;">✕</button>
+      </div>
+
+      <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('vulns', this)">Vulns <span style="margin-left: 4px; padding: 1px 6px; border-radius: 10px; font-size: 10px; background: rgba(255,51,102,0.1); color: var(--critical);">${r.vulnerabilities?.length || 0}</span></button>
+        <button class="tab-btn" onclick="switchTab('secrets', this)">Secrets <span style="margin-left: 4px; padding: 1px 6px; border-radius: 10px; font-size: 10px; background: rgba(255,51,102,0.1); color: var(--critical);">${r.secrets?.length || 0}</span></button>
+        <button class="tab-btn" onclick="switchTab('misconfig', this)">Misconfig <span style="margin-left: 4px; padding: 1px 6px; border-radius: 10px; font-size: 10px; background: rgba(255,204,51,0.1); color: var(--medium);">${r.misconfigurations?.length || 0}</span></button>
+      </div>
+
+      <div id="tabContent" style="padding: 18px; max-height: 400px; overflow-y: auto;">
+        ${renderVulnsTab(r.vulnerabilities)}
+      </div>
+    </div>
+  `;
+}
+
+function renderVulnsTab(vulns) {
+  if (!vulns || vulns.length === 0) return '<div style="text-align:center;padding:40px;color:var(--accent);"><div style="font-size:28px;margin-bottom:8px;">✓</div><span style="font-family:var(--font-mono);font-size:13px;">No vulnerabilities found</span></div>';
+  return vulns.map(v => `
+    <div class="vuln-item" style="border-left: 3px solid ${sevColor(v.severity)};">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="sev-badge" style="color:var(--bg);background:${sevColor(v.severity)};">${v.severity}</span>
+          <span style="font-family:var(--font-mono);color:var(--text-muted);font-size:11px;">${v.id}</span>
+        </div>
+        <span style="color:${sevColor(v.severity)};font-size:11px;font-weight:700;font-family:var(--font-mono);">CVSS ${v.cvss}</span>
+      </div>
+      <p style="color:var(--text);font-size:13px;margin:0 0 6px;line-height:1.4;">${v.title}</p>
+      <div style="display:flex;gap:16px;font-size:11px;font-family:var(--font-mono);">
+        <span style="color:var(--text-muted);">📦 ${v.package}@${v.installed_version}</span>
+        <span style="color:var(--accent);">→ ${v.fixed_version}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderSecretsTab(secrets) {
+  if (!secrets || secrets.length === 0) return '<div style="text-align:center;padding:40px;color:var(--accent);"><div style="font-size:28px;margin-bottom:8px;">✓</div><span style="font-family:var(--font-mono);font-size:13px;">No secrets detected</span></div>';
+  return secrets.map(s => `
+    <div class="vuln-item" style="border-left: 3px solid var(--critical);">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <span style="font-size:13px;">🔑</span>
+        <span style="color:var(--critical);font-weight:700;font-size:13px;font-family:var(--font-mono);">${s.type}</span>
+      </div>
+      <span style="font-family:var(--font-mono);color:var(--text-muted);font-size:11px;">${s.file}:${s.line}</span>
+    </div>
+  `).join('');
+}
+
+function renderMisconfigTab(items) {
+  if (!items || items.length === 0) return '<div style="text-align:center;padding:40px;"><span style="font-family:var(--font-mono);font-size:13px;color:var(--text-muted);">No misconfigurations checked</span></div>';
+  const statusColor = { PASS: 'var(--accent)', FAIL: 'var(--critical)', WARN: 'var(--medium)' };
+  const statusIcon = { PASS: '✓', FAIL: '✕', WARN: '!' };
+  return items.map(m => `
+    <div class="vuln-item" style="border-left: 3px solid ${statusColor[m.status] || 'var(--info)'}; display:flex; justify-content:space-between; align-items:center;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="width:22px;height:22px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:${statusColor[m.status] || 'var(--info)'}20;color:${statusColor[m.status] || 'var(--info)'};font-size:11px;font-weight:800;font-family:var(--font-mono);">
+          ${statusIcon[m.status] || '?'}
+        </span>
+        <span style="color:var(--text);font-size:13px;">${m.check}</span>
+      </div>
+      <span class="sev-badge" style="color:var(--bg);background:${statusColor[m.status] || 'var(--info)'};">${m.status}</span>
+    </div>
+  `).join('');
+}
+
+function switchTab(tab, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const content = document.getElementById('tabContent');
+  if (tab === 'vulns') content.innerHTML = renderVulnsTab(selectedResult.vulnerabilities);
+  if (tab === 'secrets') content.innerHTML = renderSecretsTab(selectedResult.secrets);
+  if (tab === 'misconfig') content.innerHTML = renderMisconfigTab(selectedResult.misconfigurations);
+}
+
+function closeDetail() {
+  selectedResult = null;
+  document.getElementById('detailPanel').style.display = 'none';
+  renderResults();
+}
+</script>
+</body>
+</html>

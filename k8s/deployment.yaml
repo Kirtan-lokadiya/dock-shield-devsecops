@@ -1,0 +1,113 @@
+---
+# ─── Backend Deployment ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dock-shield-api
+  labels:
+    app: dock-shield
+    component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dock-shield
+      component: api
+  template:
+    metadata:
+      labels:
+        app: dock-shield
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/YOUR_GITHUB_USER/dock-shield-api:IMAGE_TAG
+          ports:
+            - containerPort: 4000
+          env:
+            - name: PORT
+              value: "4000"
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 5
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+
+---
+# ─── Frontend Deployment ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dock-shield-ui
+  labels:
+    app: dock-shield
+    component: ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dock-shield
+      component: ui
+  template:
+    metadata:
+      labels:
+        app: dock-shield
+        component: ui
+    spec:
+      containers:
+        - name: ui
+          image: ghcr.io/YOUR_GITHUB_USER/dock-shield-ui:IMAGE_TAG
+          ports:
+            - containerPort: 80
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+
+---
+# ─── Backend Service ───
+apiVersion: v1
+kind: Service
+metadata:
+  name: dock-shield-api
+spec:
+  selector:
+    app: dock-shield
+    component: api
+  ports:
+    - port: 4000
+      targetPort: 4000
+
+---
+# ─── Frontend Service ───
+apiVersion: v1
+kind: Service
+metadata:
+  name: dock-shield-ui
+spec:
+  selector:
+    app: dock-shield
+    component: ui
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer
