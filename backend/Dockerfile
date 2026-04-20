@@ -18,11 +18,17 @@ RUN npm ci --only=production
 COPY server.js .
 
 # Non-root user
-RUN addgroup -S scanner && adduser -S scanner -G scanner
+RUN addgroup -S scanner && adduser -S scanner -G scanner && \
+    mkdir -p /home/scanner/.cache/trivy && \
+    chown -R scanner:scanner /home/scanner /app
+
+ENV TRIVY_CACHE_DIR=/home/scanner/.cache/trivy
 
 EXPOSE 4000
 
 HEALTHCHECK --interval=30s --timeout=5s \
   CMD wget -qO- http://localhost:4000/health || exit 1
+
+USER scanner
 
 CMD ["node", "server.js"]

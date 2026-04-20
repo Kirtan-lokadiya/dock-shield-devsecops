@@ -20,10 +20,11 @@ services:
       - "4000:4000"
     volumes:
       # Trivy cache (avoids re-downloading vulnerability DB)
-      - trivy-cache:/root/.cache/trivy
+      - trivy-cache:/home/scanner/.cache/trivy
     environment:
       - PORT=4000
       - NODE_ENV=production
+      - TRIVY_CACHE_DIR=/home/scanner/.cache/trivy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]

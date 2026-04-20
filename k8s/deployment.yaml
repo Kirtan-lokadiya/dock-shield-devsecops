@@ -27,9 +27,13 @@ spec:
           env:
             - name: PORT
               value: "4000"
+            - name: TRIVY_CACHE_DIR
+              value: "/home/scanner/.cache/trivy"
+          securityContext:
+            allowPrivilegeEscalation: false
           volumeMounts:
             - name: trivy-cache
-              mountPath: /root/.cache/trivy
+              mountPath: /home/scanner/.cache/trivy
           resources:
             limits:
               memory: "512Mi"
@@ -75,6 +79,8 @@ spec:
       containers:
         - name: ui
           image: ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-ui:IMAGE_TAG
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: 80
           resources:
