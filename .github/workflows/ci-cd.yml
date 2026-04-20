@@ -97,19 +97,73 @@ jobs:
           docker tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
           docker push ${{ env.FRONTEND_IMAGE }}:latest
 
+  # ── Provision/Reuse DigitalOcean Infra ──
+  infra:
+    name: "🏗️ Provision Infra"
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      kubeconfig_b64: ${{ steps.kubeconfig.outputs.kubeconfig_b64 }}
+    env:
+      CLUSTER_NAME: dock-shield-cluster
+      TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Setup doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_TOKEN }}
+
+      # Without remote Terraform state in CI, we guard cluster creation explicitly.
+      - name: Check whether DOKS cluster already exists
+        id: cluster-check
+        run: |
+          if doctl kubernetes cluster get "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Cluster already exists: $CLUSTER_NAME"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Cluster not found. Terraform will create it."
+          fi
+
+      - name: Terraform Init
+        if: steps.cluster-check.outputs.exists == 'false'
+        run: terraform -chdir=terraform init
+
+      - name: Terraform Apply (first-time cluster create)
+        if: steps.cluster-check.outputs.exists == 'false'
+        run: terraform -chdir=terraform apply -auto-approve
+
+      - name: Export kubeconfig from DigitalOcean
+        id: kubeconfig
+        run: |
+          doctl kubernetes cluster kubeconfig show "$CLUSTER_NAME" > kubeconfig
+          echo "kubeconfig_b64=$(base64 -w 0 kubeconfig)" >> "$GITHUB_OUTPUT"
+
   # ── Deploy to Kubernetes ──
   deploy:
     name: "🚀 Deploy to K8s"
-    needs: [build-backend, build-frontend]
+    needs: [build-backend, build-frontend, infra]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup kubectl
-        uses: azure/k8s-set-context@v3
-        with:
-          kubeconfig: ${{ secrets.KUBECONFIG }}
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ needs.infra.outputs.kubeconfig_b64 }}" | base64 -d > kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Verify cluster access
+        run: kubectl get nodes
 
       - name: Deploy
         run: |
