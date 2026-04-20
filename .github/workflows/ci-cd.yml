@@ -31,7 +31,7 @@ jobs:
             -v "${{ github.workspace }}:/src" \
             -w /src \
             semgrep/semgrep:latest \
-            semgrep scan --config "p/nodejs p/owasp-top-ten" --error
+            semgrep scan --config p/nodejs --config p/owasp-top-ten --error
 
   # ── Build & Push Backend ──
   build-backend:
