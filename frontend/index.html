@@ -653,8 +653,10 @@ function renderVulnsTab(vulns) {
       <p style="color:var(--text);font-size:13px;margin:0 0 6px;line-height:1.4;">${v.title}</p>
       <div style="display:flex;gap:16px;font-size:11px;font-family:var(--font-mono);">
         <span style="color:var(--text-muted);">📦 ${v.package}@${v.installed_version}</span>
-        <span style="color:var(--accent);">→ ${v.fixed_version}</span>
+        <span style="color:var(--accent);">→ ${v.fix_label || v.fixed_version}</span>
       </div>
+      ${v.fix_guidance ? `<p style="color:var(--text-muted);font-size:11px;line-height:1.5;margin:8px 0 0;">${v.fix_guidance}</p>` : ''}
+      ${v.advisory_url ? `<a href="${v.advisory_url}" target="_blank" rel="noreferrer" style="display:inline-block;margin-top:6px;color:var(--accent);font-size:11px;font-family:var(--font-mono);">Source: ${v.advisory_source || 'Vendor advisory'}</a>` : ''}
     </div>
   `).join('');
 }

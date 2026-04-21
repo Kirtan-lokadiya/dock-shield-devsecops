@@ -7,6 +7,7 @@ const execFileAsync = util.promisify(execFile);
 const app = express();
 const registryCredentials = new Map();
 const scanHistory = [];
+const debianTrackerCache = new Map();
 
 app.use(cors());
 app.use(express.json());
@@ -45,6 +46,33 @@ function validImageName(image) {
 
 function validTag(tag) {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(tag);
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function stripHtml(value) {
+  return decodeHtmlEntities(String(value || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripHtmlPreserveLines(value) {
+  return decodeHtmlEntities(String(value || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, ""))
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function normalizePackageToken(value) {
+  return String(value || "").toLowerCase().replace(/:.*$/, "").trim();
 }
 
 function isDockerHubRegistry(registryHost) {
@@ -98,19 +126,303 @@ async function validateDockerHubCredentials(username, password) {
   }
 }
 
+function detectDebianRelease(osMetadata) {
+  const raw = [
+    osMetadata?.PrettyName,
+    osMetadata?.Name,
+    osMetadata?.Version,
+    osMetadata?.Family,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (!raw.includes("debian")) return null;
+
+  const releaseMap = [
+    { suite: "sid", patterns: [" sid", " unstable"] },
+    { suite: "forky", patterns: ["forky", "14"] },
+    { suite: "trixie", patterns: ["trixie", "13"] },
+    { suite: "bookworm", patterns: ["bookworm", "12"] },
+    { suite: "bullseye", patterns: ["bullseye", "11"] },
+  ];
+
+  for (const candidate of releaseMap) {
+    if (candidate.patterns.some((pattern) => raw.includes(pattern))) {
+      return candidate.suite;
+    }
+  }
+
+  return null;
+}
+
 function extractMetadata(vulnData) {
   const metadata = vulnData?.Metadata || {};
-  const osName = metadata?.OS?.Name || metadata?.OS?.Family || "linux";
+  const osMetadata = metadata?.OS || {};
+  const osName = osMetadata?.Name || osMetadata?.Family || "linux";
   const arch = metadata?.ImageConfig?.architecture || "amd64";
   const layers = Array.isArray(metadata?.ImageConfig?.rootfs?.diff_ids)
     ? metadata.ImageConfig.rootfs.diff_ids.length
     : 0;
+  const distroFamily = normalizePackageToken(osMetadata?.Family || osMetadata?.Name || "");
+  const distroRelease = distroFamily === "debian" ? detectDebianRelease(osMetadata) : null;
 
   return {
     os: `${osName}/${arch}`,
     size: 0,
     layers,
+    distroFamily,
+    distroRelease,
+    distroName: osName,
   };
+}
+
+function parseDebianTrackerTableRows(tableHtml, expectedColumns) {
+  const rows = [];
+  const matches = tableHtml.matchAll(/<tr>([\s\S]*?)<\/tr>/gi);
+
+  for (const match of matches) {
+    const cells = Array.from(match[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)).map((cell) => stripHtml(cell[1]));
+    if (cells.length === expectedColumns) {
+      rows.push(cells);
+    }
+  }
+
+  return rows;
+}
+
+function parseDebianTracker(html) {
+  const vulnerableTableMatch = html.match(/<h2>Vulnerable and fixed packages<\/h2>[\s\S]*?<table>([\s\S]*?)<\/table>/i);
+  const fixedTableMatch = html.match(/The information below is based on the following data on fixed versions\.<\/p><table>([\s\S]*?)<\/table>/i);
+  const notesMatch = html.match(/<h2>Notes<\/h2><pre>([\s\S]*?)<\/pre>/i);
+
+  const vulnerableRows = vulnerableTableMatch ? parseDebianTrackerTableRows(vulnerableTableMatch[1], 4) : [];
+  const fixedRows = fixedTableMatch ? parseDebianTrackerTableRows(fixedTableMatch[1], 7) : [];
+
+  let currentSourcePackage = "";
+  const packageStatus = [];
+  for (const [sourceCell, release, version, status] of vulnerableRows) {
+    if (sourceCell && sourceCell !== "Source Package") {
+      currentSourcePackage = sourceCell.split(" (")[0].trim();
+    }
+    if (!currentSourcePackage || release === "Release") continue;
+    packageStatus.push({
+      sourcePackage: currentSourcePackage,
+      release,
+      version,
+      status,
+    });
+  }
+
+  const fixedVersions = [];
+  for (const [pkg, type, release, fixedVersion] of fixedRows) {
+    if (!pkg || pkg === "Package") continue;
+    fixedVersions.push({
+      package: pkg,
+      type,
+      release,
+      fixedVersion,
+    });
+  }
+
+  const notesText = notesMatch ? stripHtmlPreserveLines(notesMatch[1]) : "";
+  const notes = notesText
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/^\[([^\]]+)\]\s*-\s*([^\s]+)\s+<([^>]+)>\s*(?:\(([^)]+)\))?/);
+      if (!match) return null;
+      return {
+        release: match[1].trim().toLowerCase(),
+        package: normalizePackageToken(match[2]),
+        tag: match[3].trim(),
+        detail: (match[4] || "").trim(),
+      };
+    })
+    .filter(Boolean);
+
+  const upstreamFixedVersion = notesText.match(/Fixed by:\s+\S+\s+\(([^)]+)\)/i)?.[1] || "";
+
+  return {
+    packageStatus,
+    fixedVersions,
+    notes,
+    notesText,
+    upstreamFixedVersion,
+  };
+}
+
+async function fetchDebianTracker(cveId) {
+  if (debianTrackerCache.has(cveId)) {
+    return debianTrackerCache.get(cveId);
+  }
+
+  try {
+    const response = await fetch(`https://security-tracker.debian.org/tracker/${encodeURIComponent(cveId)}`);
+    if (!response.ok) {
+      debianTrackerCache.set(cveId, null);
+      return null;
+    }
+
+    const html = await response.text();
+    const parsed = parseDebianTracker(html);
+    debianTrackerCache.set(cveId, parsed);
+    return parsed;
+  } catch (err) {
+    debianTrackerCache.set(cveId, null);
+    return null;
+  }
+}
+
+function pickDebianSourcePackage(tracker, packageName) {
+  const knownPackages = Array.from(
+    new Set(tracker.packageStatus.map((item) => normalizePackageToken(item.sourcePackage)).filter(Boolean))
+  );
+
+  if (!knownPackages.length) return null;
+
+  const normalizedPackage = normalizePackageToken(packageName);
+  const directMatch = knownPackages.find(
+    (candidate) =>
+      candidate === normalizedPackage ||
+      normalizedPackage.startsWith(`${candidate}-`) ||
+      candidate.startsWith(`${normalizedPackage}-`)
+  );
+
+  if (directMatch) return directMatch;
+  if (knownPackages.length === 1) return knownPackages[0];
+  return null;
+}
+
+function selectDebianReleaseRow(rows, release) {
+  if (!release) return null;
+
+  const normalizedRelease = release.toLowerCase();
+  return (
+    rows.find((row) => row.release.toLowerCase() === normalizedRelease) ||
+    rows.find((row) => row.release.toLowerCase().startsWith(`${normalizedRelease} (`)) ||
+    null
+  );
+}
+
+function buildFallbackFixInfo(vuln, metadata) {
+  const distroLabel = metadata.distroRelease
+    ? `${metadata.distroFamily} ${metadata.distroRelease}`
+    : metadata.distroName || metadata.os;
+
+  if (vuln.fixed_version && vuln.fixed_version !== "No fix available") {
+    return {
+      fixed_version: vuln.fixed_version,
+      fix_label: vuln.fixed_version,
+      fix_guidance: `Upgrade ${vuln.package} to ${vuln.fixed_version}.`,
+      advisory_url: vuln.primary_url || "",
+      advisory_source: "Scanner advisory",
+    };
+  }
+
+  return {
+    fixed_version: "Vendor fix pending",
+    fix_label: "Vendor fix pending",
+    fix_guidance: `No patched package is published yet for ${distroLabel}. Monitor the vendor advisory and rebuild when a fixed package becomes available.`,
+    advisory_url: vuln.primary_url || "",
+    advisory_source: "Scanner advisory",
+  };
+}
+
+function buildDebianFixInfo(vuln, metadata, tracker, fallback) {
+  const sourcePackage = pickDebianSourcePackage(tracker, vuln.package);
+  if (!sourcePackage) {
+    return fallback;
+  }
+
+  const suite = metadata.distroRelease;
+  const suiteLabel = suite ? `Debian ${suite}` : "the detected Debian release";
+  const packageRows = tracker.packageStatus.filter(
+    (row) => normalizePackageToken(row.sourcePackage) === sourcePackage
+  );
+  const fixedRows = tracker.fixedVersions.filter(
+    (row) => normalizePackageToken(row.package) === sourcePackage
+  );
+  const suiteRow = selectDebianReleaseRow(packageRows, suite);
+  const suiteNote = tracker.notes.find(
+    (note) => note.release === suite && note.package === sourcePackage
+  );
+  const nearestFixed = fixedRows.find((row) => row.release !== "(unstable)") || fixedRows[0] || null;
+  const noteText = suiteNote
+    ? ` Debian marks this as ${suiteNote.tag}${suiteNote.detail ? ` (${suiteNote.detail})` : ""}.`
+    : "";
+
+  if (fallback.fix_label !== "Vendor fix pending") {
+    return {
+      ...fallback,
+      fix_guidance: `Upgrade ${vuln.package} to ${fallback.fix_label}.`,
+      advisory_url: `https://security-tracker.debian.org/tracker/${encodeURIComponent(vuln.id)}`,
+      advisory_source: "Debian Security Tracker",
+    };
+  }
+
+  if (suiteRow && suiteRow.status.toLowerCase() === "fixed") {
+    return {
+      fixed_version: suiteRow.version,
+      fix_label: suiteRow.version,
+      fix_guidance: `Upgrade ${sourcePackage} in ${suiteLabel} to ${suiteRow.version}.`,
+      advisory_url: `https://security-tracker.debian.org/tracker/${encodeURIComponent(vuln.id)}`,
+      advisory_source: "Debian Security Tracker",
+    };
+  }
+
+  if (suiteRow && suiteRow.status.toLowerCase() === "vulnerable") {
+    const prefix = nearestFixed
+      ? `${suiteLabel} still ships a vulnerable package. The nearest Debian fix listed is ${nearestFixed.release} ${nearestFixed.fixedVersion}.`
+      : `${suiteLabel} still ships a vulnerable package.`;
+    const upstream = tracker.upstreamFixedVersion
+      ? ` Upstream fixed this in ${tracker.upstreamFixedVersion}.`
+      : "";
+
+    return {
+      fixed_version: `${suiteLabel} package still vulnerable`,
+      fix_label: `${suiteLabel} package still vulnerable`,
+      fix_guidance: `${prefix}${upstream} Rebuild when Debian publishes a ${suite} package update or move to a newer compatible base image.${noteText}`,
+      advisory_url: `https://security-tracker.debian.org/tracker/${encodeURIComponent(vuln.id)}`,
+      advisory_source: "Debian Security Tracker",
+    };
+  }
+
+  if (nearestFixed) {
+    return {
+      fixed_version: nearestFixed.fixedVersion,
+      fix_label: nearestFixed.fixedVersion,
+      fix_guidance: `A fixed Debian package is listed as ${nearestFixed.release} ${nearestFixed.fixedVersion}. Rebuild against a base image that contains that package or a newer compatible release.`,
+      advisory_url: `https://security-tracker.debian.org/tracker/${encodeURIComponent(vuln.id)}`,
+      advisory_source: "Debian Security Tracker",
+    };
+  }
+
+  return {
+    ...fallback,
+    advisory_url: `https://security-tracker.debian.org/tracker/${encodeURIComponent(vuln.id)}`,
+    advisory_source: "Debian Security Tracker",
+  };
+}
+
+async function enrichFixGuidance(vulnerabilities, metadata) {
+  return Promise.all(
+    vulnerabilities.map(async (vuln) => {
+      const fallback = buildFallbackFixInfo(vuln, metadata);
+      if (metadata.distroFamily !== "debian" || !/^CVE-\d{4}-\d+$/i.test(vuln.id)) {
+        return { ...vuln, ...fallback };
+      }
+
+      const tracker = await fetchDebianTracker(vuln.id);
+      if (!tracker) {
+        return { ...vuln, ...fallback };
+      }
+
+      return {
+        ...vuln,
+        ...buildDebianFixInfo(vuln, metadata, tracker, fallback),
+      };
+    })
+  );
 }
 
 // ──────────────────────────────────────
@@ -247,7 +559,7 @@ app.post("/api/scan", async (req, res) => {
     // Step 4: Parse and format results
     const vulnData = JSON.parse(vulnScan);
     const metadata = extractMetadata(vulnData);
-    const report = formatScanReport(image, tag, vulnData, secretScan, misconfigScan, metadata);
+    const report = await formatScanReport(image, tag, vulnData, secretScan, misconfigScan, metadata);
     scanHistory.unshift(report);
     if (scanHistory.length > 100) scanHistory.pop();
 
@@ -273,7 +585,7 @@ app.post("/api/scan", async (req, res) => {
 // ──────────────────────────────────────
 // Format Scan Report
 // ──────────────────────────────────────
-function formatScanReport(image, tag, vulnData, secretData, misconfigData, metadata) {
+async function formatScanReport(image, tag, vulnData, secretData, misconfigData, metadata) {
   // Extract vulnerabilities
   const vulnerabilities = [];
   const summary = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -294,6 +606,7 @@ function formatScanReport(image, tag, vulnData, secretData, misconfigData, metad
             severity: sev,
             title: vuln.Title || vuln.Description?.substring(0, 120) || "No description",
             cvss: vuln.CVSS?.nvd?.V3Score || vuln.CVSS?.redhat?.V3Score || 0,
+            primary_url: vuln.PrimaryURL || vuln.DataSource?.URL || "",
           });
         }
       }
@@ -334,6 +647,13 @@ function formatScanReport(image, tag, vulnData, secretData, misconfigData, metad
 
   // Calculate security score
   const score = calculateScore(summary, secrets.length, misconfigurations);
+  const visibleVulnerabilities = vulnerabilities
+    .sort((a, b) => {
+      const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+      return (order[a.severity] || 4) - (order[b.severity] || 4);
+    })
+    .slice(0, 50);
+  const enrichedVulnerabilities = await enrichFixGuidance(visibleVulnerabilities, metadata);
 
   return {
     image,
@@ -343,12 +663,7 @@ function formatScanReport(image, tag, vulnData, secretData, misconfigData, metad
     layers: metadata.layers || 0,
     score,
     summary,
-    vulnerabilities: vulnerabilities
-      .sort((a, b) => {
-        const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
-        return (order[a.severity] || 4) - (order[b.severity] || 4);
-      })
-      .slice(0, 50), // Top 50 vulns
+    vulnerabilities: enrichedVulnerabilities,
     secrets,
     misconfigurations,
     scanned_at: new Date().toISOString(),
