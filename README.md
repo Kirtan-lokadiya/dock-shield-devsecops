@@ -1,162 +1,400 @@
-# 🛡️ Dock Shield - Docker Security Scanner Dashboard
+# Dock Shield
 
-A full-stack DevSecOps project that scans **any Docker image** (public or private) for vulnerabilities, secrets, and misconfigurations — powered by **Trivy**, deployed with **Docker**, **Kubernetes**, **Terraform**, and **GitHub Actions**.
+Dock Shield is a container security scanning dashboard built with:
 
-## 🏗️ Architecture
+- a Node.js backend that runs Trivy image scans
+- a static Nginx frontend
+- Kubernetes manifests for deployment
+- Terraform for provisioning a DigitalOcean Kubernetes cluster
+- GitHub Actions for CI/CD
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    GITHUB ACTIONS                        │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
-│  │ Gitleaks │  │ Semgrep  │  │  Trivy   │  │ Deploy  │ │
-│  │ (secrets)│  │ (SAST)   │  │ (images) │  │ (k8s)   │ │
-│  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                KUBERNETES (DigitalOcean)                  │
-│                                                          │
-│  ┌──────────────────┐     ┌──────────────────────────┐  │
-│  │   Frontend (UI)  │────▶│   Backend API            │  │
-│  │   nginx:alpine   │     │   Node.js + Trivy        │  │
-│  │   Port 80        │     │   Port 4000              │  │
-│  └──────────────────┘     │                          │  │
-│                           │  ┌─────────────────────┐ │  │
-│                           │  │ Trivy Scanner        │ │  │
-│                           │  │ - Vuln scanning      │ │  │
-│                           │  │ - Secret detection   │ │  │
-│                           │  │ - Misconfig checks   │ │  │
-│                           │  └─────────────────────┘ │  │
-│                           │                          │  │
-│                           │  Docker Socket Mount ──────────▶ Pull & Scan
-│                           └──────────────────────────┘  │    Any Image
-│                                                          │
-│  Provisioned by: TERRAFORM                               │
-└─────────────────────────────────────────────────────────┘
-```
+It can scan public images directly and can scan private images by passing registry credentials to Trivy at runtime.
 
-## 📁 Project Structure
+## What This Project Does
 
-```
-dock-shield/
+- scans container images for vulnerabilities
+- runs Trivy secret scanning
+- runs Trivy misconfiguration scanning
+- shows scan results in a web UI
+- deploys the app to DigitalOcean Kubernetes from GitHub Actions
+
+## Current Architecture
+
+This repo currently deploys:
+
+- `dock-shield-api`: backend API, 1 replica
+- `dock-shield-ui`: frontend UI, 2 replicas
+- `dock-shield-api` Service: internal `ClusterIP`
+- `dock-shield-ui` Service: public `LoadBalancer`
+- one DigitalOcean Kubernetes cluster with one node
+
+Traffic flow:
+
+1. User opens the frontend `LoadBalancer` IP.
+2. Nginx serves the UI.
+3. Requests to `/api/*` are proxied by Nginx to the internal backend service.
+4. The backend runs Trivy and returns JSON results.
+
+## Repository Layout
+
+```text
+.
 ├── backend/
-│   ├── server.js          # Express API with Trivy integration
+│   ├── Dockerfile
 │   ├── package.json
-│   └── Dockerfile         # Node.js + Trivy scanner
+│   └── server.js
 ├── frontend/
-│   ├── index.html         # Dashboard UI
-│   └── Dockerfile         # nginx static server
+│   ├── Dockerfile
+│   ├── index.html
+│   └── nginx.conf
 ├── k8s/
-│   └── deployment.yaml    # K8s manifests (Deployments, Services)
+│   └── deployment.yaml
 ├── terraform/
-│   └── main.tf            # DigitalOcean infra (K8s cluster, registry)
+│   └── main.tf
 ├── .github/workflows/
-│   └── ci-cd.yml          # Full DevSecOps pipeline
-├── docker-compose.yml     # Local development stack
+│   └── ci-cd.yml
+├── docker-compose.yml
 └── README.md
 ```
 
-## 🚀 Quick Start (Local Development)
+## Prerequisites
 
-### Prerequisites
-- Docker & Docker Compose installed
-- Docker daemon running
+For local development:
 
-### Step 1: Clone & Run
+- Git
+- Docker
+- Docker Compose plugin or `docker-compose`
+
+For Kubernetes access and deployment:
+
+- DigitalOcean account
+- DigitalOcean API token
+- `doctl`
+- `kubectl`
+- Terraform
+
+For CI/CD:
+
+- GitHub repository
+- GitHub Container Registry access
+- one GitHub Actions secret:
+  - `DO_TOKEN`
+
+## Local Setup
+
+### 1. Clone the repository
+
 ```bash
-git clone https://github.com/YOUR_USER/dock-shield.git
-cd dock-shield
+git clone <your-repo-url>
+cd devsecops-pipeline
+```
+
+### 2. Start the local stack
+
+```bash
+docker compose up -d
+```
+
+If your machine uses legacy Compose:
+
+```bash
 docker-compose up -d
 ```
 
-### Step 2: Open Dashboard
-```
-Frontend: http://localhost:3000
-Backend:  http://localhost:4000/health
-```
+### 3. Open the app
 
-### Step 3: Login & Scan
-1. Enter your Docker Hub credentials (or any registry)
-2. Type an image name: `nginx:latest`, `python:3.10`, or your private image
-3. Click SCAN and watch real Trivy results appear!
+- Frontend: `http://localhost:3000`
+- Backend health check: `http://localhost:4000/health`
 
-## ☁️ Deploy to DigitalOcean
+### 4. Stop the stack
 
-### Step 1: Provision Infrastructure
 ```bash
-cd terraform
-export TF_VAR_do_token="your-digitalocean-api-token"
-terraform init
-terraform plan
-terraform apply
+docker compose down
 ```
 
-### Step 2: Configure kubectl
+## Local Usage
+
+### Scan a public image
+
+Open the UI and enter an image such as:
+
+- `nginx:latest`
+- `node:20-alpine`
+- `python:3.12-slim`
+
+### Scan a private image
+
+Use the login form first.
+
+Current behavior:
+
+- Docker Hub credentials are validated on login
+- other registries are stored and used during scan
+- for non-Docker-Hub registries, a failed scan is where auth errors are currently surfaced
+
+## Local API Endpoints
+
+- `GET /health`
+- `POST /api/auth/login`
+- `POST /api/scan`
+- `GET /api/images/local`
+- `GET /api/history`
+
+Example scan request:
+
 ```bash
-# Get kubeconfig from Terraform output
-terraform output -raw kubeconfig > ~/.kube/dock-shield-config
-export KUBECONFIG=~/.kube/dock-shield-config
+curl -X POST http://localhost:4000/api/scan \
+  -H "Content-Type: application/json" \
+  -d '{"image":"nginx","tag":"latest"}'
 ```
 
-### Step 3: Deploy to K8s
+## Deploy to DigitalOcean Manually
+
+### 1. Export the DigitalOcean token
+
 ```bash
-# Update image references in k8s/deployment.yaml
+export TF_VAR_do_token="<your-digitalocean-token>"
+```
+
+### 2. Provision the cluster
+
+```bash
+terraform -chdir=terraform init
+terraform -chdir=terraform apply
+```
+
+What Terraform creates right now:
+
+- one DOKS cluster named `dock-shield-cluster`
+- region `blr1`
+- one node pool
+- one node of size `s-2vcpu-2gb`
+
+### 3. Install and configure `doctl`
+
+Authenticate:
+
+```bash
+doctl auth init
+```
+
+Save kubeconfig:
+
+```bash
+doctl kubernetes cluster kubeconfig save dock-shield-cluster
+```
+
+Verify access:
+
+```bash
+kubectl config current-context
+kubectl get nodes
+```
+
+### 4. Build and push images manually if needed
+
+This project is currently set up to push images to GHCR through GitHub Actions. If you want to do it manually, log in to GHCR and push both images with tags that match what you will deploy in Kubernetes.
+
+### 5. Deploy the manifests
+
+The manifest uses an `IMAGE_TAG` placeholder. Replace it with a real image tag first.
+
+Example:
+
+```bash
+sed -i "s|IMAGE_TAG|latest|g" k8s/deployment.yaml
 kubectl apply -f k8s/
 ```
 
-### Step 4: Get External IP
+### 6. Get the public IP
+
 ```bash
 kubectl get svc dock-shield-ui
-# Open the EXTERNAL-IP in your browser
 ```
 
-## 🔒 Supported Registries
+Open the `EXTERNAL-IP` in your browser.
 
-| Registry | Login Format |
-|----------|-------------|
-| Docker Hub | Username + Access Token |
-| GitHub (ghcr.io) | GitHub username + Personal Access Token |
-| AWS ECR | AWS Access Key ID + Secret Key |
-| Google GCR | `_json_key` + Service Account JSON |
-| Azure ACR | Service Principal ID + Password |
-| Private Registry | Username + Password |
+## GitHub Actions Deployment Flow
 
-## 🔍 What Gets Scanned
+The workflow in `.github/workflows/ci-cd.yml` does the following on pushes to `main`:
 
-| Check | Tool | What It Finds |
-|-------|------|---------------|
-| OS Package Vulns | Trivy | CVEs in apt/apk/yum packages |
-| App Dependencies | Trivy | Vuln npm/pip/go modules |
-| Embedded Secrets | Trivy | API keys, passwords, tokens in files |
-| Dockerfile Issues | Trivy | Running as root, no healthcheck, etc |
+1. runs Gitleaks
+2. runs Semgrep
+3. builds backend image
+4. scans backend image with Trivy
+5. pushes backend image to GHCR
+6. builds frontend image
+7. pushes frontend image to GHCR
+8. checks whether the DOKS cluster already exists
+9. creates the cluster only if it does not already exist
+10. exports kubeconfig from DigitalOcean
+11. replaces `IMAGE_TAG` in the Kubernetes manifest with the current commit SHA
+12. deploys the manifests with `kubectl apply -f k8s/`
 
-## 📊 API Endpoints
+## GitHub Secrets
 
+Create this repository secret:
+
+- `DO_TOKEN`: your DigitalOcean API token
+
+Notes:
+
+- GHCR push uses `GITHUB_TOKEN`, which GitHub Actions provides automatically
+- no extra GHCR secret is required in the current workflow
+
+## Step-by-Step: Set Up Another Developer From Scratch
+
+### Option A: Local only
+
+Use this if the developer just wants to run and test the project locally.
+
+1. Install Docker and Git.
+2. Clone the repo.
+3. Run `docker compose up -d`.
+4. Open `http://localhost:3000`.
+5. Test a scan with `nginx:latest`.
+
+### Option B: Full cloud setup
+
+Use this if the developer needs the same DigitalOcean + GitHub Actions deployment flow.
+
+1. Install Git, Docker, Terraform, `doctl`, and `kubectl`.
+2. Clone the repo.
+3. Create a DigitalOcean API token.
+4. In GitHub, add repository secret `DO_TOKEN`.
+5. Push the repo to GitHub.
+6. Either:
+   - let GitHub Actions create the cluster on first push to `main`, or
+   - run Terraform manually first
+7. Run:
+
+```bash
+doctl auth init
+doctl kubernetes cluster kubeconfig save dock-shield-cluster
+kubectl get nodes
+kubectl get svc -A
 ```
-POST /api/auth/login     - Authenticate with Docker registry
-POST /api/scan           - Scan an image { image: "nginx", tag: "latest" }
-GET  /api/images/local   - List locally available Docker images
-GET  /api/history        - Get scan history
-GET  /health             - Health check
+
+8. Open the `dock-shield-ui` external IP.
+
+## Kubernetes Resources in This Repo
+
+From `k8s/deployment.yaml`:
+
+- Backend Deployment
+  - image: `ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-api:<tag>`
+  - 1 replica
+  - port `4000`
+  - readiness and liveness probes on `/health`
+  - `emptyDir` cache for Trivy
+
+- Frontend Deployment
+  - image: `ghcr.io/kirtan-lokadiya/dock-shield-devsecops/dock-shield-ui:<tag>`
+  - 2 replicas
+  - port `80`
+
+- Backend Service
+  - `ClusterIP`
+  - internal only
+
+- Frontend Service
+  - `LoadBalancer`
+  - public entrypoint
+
+## Security Scanning Behavior
+
+The backend runs real Trivy scans:
+
+- vulnerability scan
+- secret scan
+- misconfiguration scan
+
+Additional behavior:
+
+- Docker Hub credentials are validated on login
+- Debian-based vulnerability results are enriched with official Debian tracker guidance when available
+- scan history is in memory only
+- Trivy cache in Kubernetes is not persistent across pod recreation
+
+## Common Commands
+
+### Docker
+
+```bash
+docker compose up -d
+docker compose down
+docker compose logs -f
 ```
 
-## 🛠️ CI/CD Pipeline (GitHub Actions)
+### Terraform
 
-Every push triggers:
-1. **Gitleaks** → Detect hardcoded secrets in code
-2. **Semgrep** → Static code analysis (OWASP Top 10)
-3. **Docker Build** → Build backend & frontend images
-4. **Trivy Scan** → Scan our own images for CVEs
-5. **Push to GHCR** → Push to GitHub Container Registry
-6. **Deploy to K8s** → Rolling update on DigitalOcean
+```bash
+terraform -chdir=terraform init
+terraform -chdir=terraform plan
+terraform -chdir=terraform apply
+terraform -chdir=terraform destroy
+```
 
-## 💡 Skills Demonstrated
+### Kubernetes
 
-- **Docker**: Multi-stage builds, Docker-in-Docker, socket mounting
-- **Kubernetes**: Deployments, Services, LoadBalancer, health probes
-- **Terraform**: IaC for DigitalOcean (K8s cluster, container registry, firewall)
-- **GitHub Actions**: Multi-stage DevSecOps pipeline with security scanning
-- **Security**: Trivy scanning, secret detection, SAST analysis
-- **Full-Stack**: Node.js backend + vanilla JS frontend dashboard
-# dock-shield-devsecops
+```bash
+kubectl get nodes
+kubectl get pods -A
+kubectl get svc -A
+kubectl logs deploy/dock-shield-api
+kubectl rollout status deploy/dock-shield-api
+kubectl rollout status deploy/dock-shield-ui
+```
+
+### DigitalOcean CLI
+
+```bash
+doctl auth init
+doctl kubernetes cluster list
+doctl kubernetes cluster kubeconfig save dock-shield-cluster
+```
+
+## Troubleshooting
+
+### `kubectl` connects to `localhost:8080`
+
+Your kubeconfig is not set.
+
+Fix:
+
+```bash
+doctl kubernetes cluster kubeconfig save dock-shield-cluster
+kubectl config current-context
+```
+
+### GitHub Actions fails because Kubernetes version is invalid
+
+The Terraform code already uses the latest supported DOKS version dynamically. If you changed that logic, revert to the data source based version selection.
+
+### GitHub Actions tries to recreate the cluster
+
+The workflow checks for the cluster by name before running Terraform. It should not recreate the cluster unless:
+
+- the cluster was deleted
+- the cluster name changed
+- the existence check failed
+
+### UI shows `504 Gateway Time-out`
+
+That usually means Nginx timed out waiting for the backend scan. The repo already includes increased proxy timeouts in `frontend/nginx.conf`, but large first-time scans can still be slow.
+
+### A scan says `No fix available`
+
+For Debian-based images, the backend now tries to replace that with vendor guidance from the Debian Security Tracker. For non-Debian images, Trivy advisory data is still the fallback.
+
+### Docker Hub login accepts bad credentials
+
+That should no longer happen for Docker Hub. If it does, ensure you deployed the latest backend image.
+
+![alt text](image-2.png)
+
+![alt text](image-1.png)
+
+![alt text](image.png)
+
+
