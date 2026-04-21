@@ -24,11 +24,14 @@ provider "digitalocean" {
   token = var.do_token
 }
 
+# Query currently supported DOKS versions so cluster creation doesn't fail on deprecated slugs.
+data "digitalocean_kubernetes_versions" "supported" {}
+
 # ─── Kubernetes Cluster ───
 resource "digitalocean_kubernetes_cluster" "dock_shield" {
   name    = "dock-shield-cluster"
   region  = var.region
-  version = "1.29.1-do.0"
+  version = data.digitalocean_kubernetes_versions.supported.latest_version
 
   node_pool {
     name       = "dock-shield-pool"
