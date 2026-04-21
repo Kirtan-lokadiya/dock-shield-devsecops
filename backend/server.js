@@ -47,12 +47,55 @@ function validTag(tag) {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(tag);
 }
 
+function isDockerHubRegistry(registryHost) {
+  return ["docker.io", "index.docker.io", "registry-1.docker.io"].includes(registryHost);
+}
+
 function buildAuthArgs(image) {
   const registryHost = registryHostFromImage(image);
   const creds = registryCredentials.get(registryHost);
 
   if (!creds) return [];
   return ["--username", creds.username, "--password", creds.password];
+}
+
+async function validateDockerHubCredentials(username, password) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch("https://hub.docker.com/v2/users/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+      signal: controller.signal,
+    });
+
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (err) {
+      payload = {};
+    }
+
+    if (!response.ok || !payload.token) {
+      return {
+        valid: false,
+        message: payload.detail || payload.message || "Invalid Docker Hub username or token",
+      };
+    }
+
+    return { valid: true };
+  } catch (err) {
+    return {
+      valid: false,
+      message: err.name === "AbortError"
+        ? "Docker Hub login timed out. Try again."
+        : "Could not reach Docker Hub to validate credentials.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function extractMetadata(vulnData) {
@@ -83,6 +126,22 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   const registryHost = normalizeRegistryHost(registry);
+
+  if (!isDockerHubRegistry(registryHost)) {
+    return res.status(400).json({
+      success: false,
+      message: `Credential validation is currently supported for Docker Hub only. Use Docker Hub or validate ${registryHost} during scan.`,
+    });
+  }
+
+  const validation = await validateDockerHubCredentials(username, password);
+  if (!validation.valid) {
+    return res.status(401).json({
+      success: false,
+      message: validation.message,
+    });
+  }
+
   registryCredentials.set(registryHost, {
     username,
     password,
