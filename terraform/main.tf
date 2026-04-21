@@ -35,53 +35,9 @@ resource "digitalocean_kubernetes_cluster" "dock_shield" {
 
   node_pool {
     name       = "dock-shield-pool"
-    size       = "s-2vcpu-4gb" # 4GB needed for Trivy scanning
-    node_count = 2
-    auto_scale = true
-    min_nodes  = 1
-    max_nodes  = 3
-  }
-}
-
-# ─── Container Registry ───
-resource "digitalocean_container_registry" "dock_shield" {
-  name                   = "dock-shield-registry"
-  subscription_tier_slug = "starter"
-  region                 = var.region
-}
-
-# ─── Firewall ───
-resource "digitalocean_firewall" "dock_shield" {
-  name = "dock-shield-firewall"
-
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "80"
-    source_addresses = ["0.0.0.0/0"]
-  }
-
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "443"
-    source_addresses = ["0.0.0.0/0"]
-  }
-
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "4000"
-    source_addresses = ["0.0.0.0/0"]
-  }
-
-  outbound_rule {
-    protocol              = "tcp"
-    port_range            = "all"
-    destination_addresses = ["0.0.0.0/0"]
-  }
-
-  outbound_rule {
-    protocol              = "udp"
-    port_range            = "all"
-    destination_addresses = ["0.0.0.0/0"]
+    size       = "s-2vcpu-2gb"
+    node_count = 1
+    auto_scale = false
   }
 }
 
@@ -97,8 +53,4 @@ output "cluster_id" {
 output "kubeconfig" {
   value     = digitalocean_kubernetes_cluster.dock_shield.kube_config[0].raw_config
   sensitive = true
-}
-
-output "registry_endpoint" {
-  value = digitalocean_container_registry.dock_shield.endpoint
 }
