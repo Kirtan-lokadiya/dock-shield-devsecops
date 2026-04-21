@@ -447,7 +447,10 @@ async function handleScan() {
       body: JSON.stringify({ image, tag }),
     });
 
-    const data = await res.json();
+    const contentType = res.headers.get('content-type') || '';
+    const data = contentType.includes('application/json')
+      ? await res.json()
+      : { error: await res.text(), status: res.status };
 
     if (res.ok) {
       scanResults.unshift(data);
@@ -457,7 +460,11 @@ async function handleScan() {
       renderDetail();
       renderStats();
     } else {
-      showError(data.suggestion || data.error || 'Scan failed');
+      const backendError = typeof data.error === 'string' ? data.error : '';
+      const message = res.status === 504
+        ? 'Scan timed out at the UI proxy. The backend may still complete if the image is large.'
+        : data.suggestion || backendError || `Scan failed with status ${res.status}`;
+      showError(message);
     }
   } catch (err) {
     showError('Cannot connect to the backend server. Make sure it is running.');
